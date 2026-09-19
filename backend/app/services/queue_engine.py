@@ -341,6 +341,164 @@ class QueueEngine:
         self.recalculate_queue(dept)
         return t
 
+    # ── Smart Reassignment & Rescheduling ───────────────────────────────────
+
+    def reassign_patient(self, token: str, new_doctor_id: str) -> dict:
+        """
+        Move a patient from their current doctor's queue to a new doctor's queue.
+        Recalculates ETAs for both affected departments.
+        """
+        tokens = self.store["tokens"]
+        doctors = self.store["doctors"]
+        patients = self.store["patients"]
+
+        if token not in tokens:
+            raise ValueError(f"Token {token} not found")
+        if new_doctor_id not in doctors:
+            raise ValueError(f"Doctor {new_doctor_id} not found")
+
+        t = tokens[token]
+        old_dept = t["department"]
+        old_doctor_id = t.get("doctor_id")
+        old_position = t.get("position", 0)
+
+        new_doctor = doctors[new_doctor_id]
+        new_dept = new_doctor["department"]
+
+        # Compact old queue — shift positions down for patients behind the removed one
+        for other in tokens.values():
+            if (other["department"] == old_dept
+                    and other["status"] in ("queued", "called")
+                    and other.get("position", 0) > old_position
+                    and other["token"] != token):
+                other["position"] -= 1
+
+        # Determine new position at end of new doctor's department queue
+        new_dept_waiting = [
+            x for x in tokens.values()
+            if x["department"] == new_dept
+            and x["status"] in ("queued", "called")
+            and x["token"] != token
+        ]
+        new_position = len(new_dept_waiting) + 1
+
+        # Update token
+        t["doctor_id"] = new_doctor_id
+        t["department"] = new_dept
+        t["position"] = new_position
+        t["status"] = "queued"
+
+        # Update patient record
+        pid = t.get("patient_id")
+        if pid and pid in patients:
+            patients[pid]["doctor_id"] = new_doctor_id
+            patients[pid]["department"] = new_dept
+            patients[pid]["status"] = "waiting"
+
+        # Record reassignment in store
+        reassignments = self.store.setdefault("reassignments", {})
+        reassignments[token] = {
+            "action": "reassigned",
+            "old_doctor_id": old_doctor_id,
+            "new_doctor_id": new_doctor_id,
+            "new_doctor_name": new_doctor["name"],
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # Recalculate both queues
+        self.recalculate_queue(old_dept)
+        if new_dept != old_dept:
+            self.recalculate_queue(new_dept)
+
+        updated_token = tokens[token]
+        new_eta = updated_token.get("estimated_start_fmt", "--")
+
+        self.add_activity(
+            f"Patient {t.get('patient_name', token)} reassigned from {old_doctor_id} to {new_doctor['name']}. Queue updated.",
+            "info"
+        )
+
+        return {
+            "token": t,
+            "new_doctor": new_doctor,
+            "new_eta": new_eta,
+            "new_position": new_position,
+        }
+
+    def reschedule_patient(self, token: str, doctor_id: str, slot_date: str, slot_time: str) -> dict:
+        """
+        Remove patient from active queue and create a rescheduled appointment.
+        Recalculates the department queue for remaining patients.
+        """
+        tokens = self.store["tokens"]
+        doctors = self.store["doctors"]
+        patients = self.store["patients"]
+
+        if token not in tokens:
+            raise ValueError(f"Token {token} not found")
+        if doctor_id not in doctors:
+            raise ValueError(f"Doctor {doctor_id} not found")
+
+        t = tokens[token]
+        dept = t["department"]
+        old_position = t.get("position", 0)
+
+        # Mark token as rescheduled (not completed — different state)
+        t["status"] = "rescheduled"
+        t["rescheduled_date"] = slot_date
+        t["rescheduled_time"] = slot_time
+
+        # Update patient record
+        pid = t.get("patient_id")
+        if pid and pid in patients:
+            patients[pid]["status"] = "rescheduled"
+            patients[pid]["rescheduled_date"] = slot_date
+            patients[pid]["rescheduled_time"] = slot_time
+
+        # Compact old queue
+        for other in tokens.values():
+            if (other["department"] == dept
+                    and other["status"] in ("queued", "called")
+                    and other.get("position", 0) > old_position):
+                other["position"] -= 1
+
+        # Record in scheduled appointments
+        scheduled = self.store.setdefault("scheduled_appointments", {})
+        doctor = doctors[doctor_id]
+        scheduled[token] = {
+            "token": token,
+            "patient_id": pid,
+            "patient_name": t.get("patient_name"),
+            "doctor_id": doctor_id,
+            "doctor_name": doctor["name"],
+            "department": dept,
+            "slot_date": slot_date,
+            "slot_time": slot_time,
+            "created_at": datetime.now().isoformat(),
+        }
+
+        # Record in reassignments store
+        reassignments = self.store.setdefault("reassignments", {})
+        reassignments[token] = {
+            "action": "rescheduled",
+            "doctor_id": doctor_id,
+            "doctor_name": doctor["name"],
+            "slot_date": slot_date,
+            "slot_time": slot_time,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        self.recalculate_queue(dept)
+        self.add_activity(
+            f"Patient {t.get('patient_name', token)} rescheduled with {doctor['name']} on {slot_date} at {slot_time}.",
+            "success"
+        )
+
+        return {
+            "token": t,
+            "scheduled_appointment": scheduled[token],
+        }
+
 
 # Singleton
 queue_engine = QueueEngine()

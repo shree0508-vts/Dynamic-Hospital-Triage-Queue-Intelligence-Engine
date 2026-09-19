@@ -8,6 +8,8 @@ import DoctorDashboard from './pages/DoctorDashboard.jsx'
 import PatientTracker from './pages/PatientTracker.jsx'
 import Simulator from './pages/Simulator.jsx'
 import Notifications from './pages/Notifications.jsx'
+import DoctorReassignment from './pages/DoctorReassignment.jsx'
+import AdminDoctorControl from './pages/AdminDoctorControl.jsx'
 import AppLayout from './layouts/AppLayout.jsx'
 
 function PrivateRoute({ children, roles }) {
@@ -25,6 +27,7 @@ export default function App() {
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/track" element={<PatientTracker />} />
+      <Route path="/reassign" element={<DoctorReassignment />} />
 
       <Route path="/" element={
         <PrivateRoute>
@@ -45,6 +48,11 @@ export default function App() {
         <Route path="simulator" element={
           <PrivateRoute roles={['receptionist']}>
             <Simulator />
+          </PrivateRoute>
+        } />
+        <Route path="admin/doctors" element={
+          <PrivateRoute roles={['receptionist']}>
+            <AdminDoctorControl />
           </PrivateRoute>
         } />
         <Route path="notifications" element={<Notifications />} />

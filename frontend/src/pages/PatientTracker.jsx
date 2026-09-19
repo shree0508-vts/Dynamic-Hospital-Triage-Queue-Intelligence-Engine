@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Search, Activity, Clock, Users, ChevronUp, RefreshCw, AlertTriangle, CheckCircle, ArrowUp } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Search, Activity, Clock, Users, RefreshCw, AlertTriangle, CheckCircle, ArrowRight } from 'lucide-react'
 import { api } from '../services/api.js'
 import { usePolling } from '../hooks/usePolling.js'
 import { PRIORITY_COLORS } from '../utils/helpers.js'
@@ -12,6 +13,7 @@ const STATUS_DISPLAY = {
 }
 
 export default function PatientTracker() {
+  const navigate = useNavigate()
   const [tokenInput, setTokenInput] = useState('')
   const [tokenData, setTokenData] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -19,6 +21,7 @@ export default function PatientTracker() {
   const [prevEta, setPrevEta] = useState(null)
   const [etaChanged, setEtaChanged] = useState(false)
   const [lastUpdated, setLastUpdated] = useState(null)
+  const [reassignStatus, setReassignStatus] = useState(null)
 
   const fetchToken = useCallback(async (t) => {
     const tok = t || tokenInput.trim().toUpperCase()
@@ -35,6 +38,11 @@ export default function PatientTracker() {
       })
       setLastUpdated(new Date().toLocaleTimeString())
       setError('')
+      // Also check reassignment status
+      try {
+        const rs = await api.getReassignmentStatus(tok)
+        setReassignStatus(rs)
+      } catch { /* ignore */ }
     } catch (e) {
       setError(e.message || 'Token not found. Please check and try again.')
     }
@@ -102,6 +110,44 @@ export default function PatientTracker() {
               <div className="text-xs text-yellow-600 mt-0.5">
                 Previous: {prevEta} → New: {t?.estimated_start_fmt}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* 🚨 Doctor Emergency Banner */}
+        {reassignStatus && (reassignStatus.doctor_status === 'emergency' || reassignStatus.action === 'pending') &&
+          reassignStatus.action !== 'reassigned' && reassignStatus.action !== 'rescheduled' && (
+          <div className="p-4 bg-red-50 border-2 border-red-400 rounded-xl slide-in">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 bg-red-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold text-red-800">🚨 Your doctor is currently attending an emergency case.</div>
+                <div className="text-xs text-red-600 mt-1">
+                  {reassignStatus.doctor_name} is unavailable. Please choose to see another doctor or reschedule.
+                </div>
+                <button
+                  onClick={() => navigate(`/reassign?token=${t?.token}`)}
+                  className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-lg transition-colors"
+                >
+                  Manage My Appointment
+                  <ArrowRight className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Reassigned / Rescheduled confirmation strip */}
+        {reassignStatus && (reassignStatus.action === 'reassigned' || reassignStatus.action === 'rescheduled') && (
+          <div className="p-3 bg-teal-50 border-2 border-teal-300 rounded-xl flex items-center gap-2 slide-in">
+            <CheckCircle className="w-4 h-4 text-teal-600 flex-shrink-0" />
+            <div className="text-sm font-semibold text-teal-800">
+              {reassignStatus.action === 'reassigned'
+                ? `Appointment moved to ${reassignStatus.reassignment?.new_doctor_name || 'new doctor'}.`
+                : `Appointment rescheduled to ${reassignStatus.reassignment?.slot_time || ''} on ${reassignStatus.reassignment?.slot_date || ''}.`
+              }
             </div>
           </div>
         )}

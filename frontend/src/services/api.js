@@ -74,4 +74,18 @@ export const api = {
   // Notifications
   getNotifications: () => request('GET', '/notifications'),
   markNotificationRead: (id) => request('POST', `/notifications/${id}/read`),
+
+  // ── Smart Doctor Reassignment & Rescheduling ──────────────────────────────
+  updateDoctorStatus: (doctorId, status) =>
+    request('PATCH', `/doctors/${doctorId}/status`, { status }),
+  getDoctorPeers: (doctorId) =>
+    request('GET', `/doctors/${doctorId}/available-peers`),
+  getReassignmentSlots: (doctorId) =>
+    request('GET', `/reassignment/slots/${doctorId}`),
+  reassignPatient: (data) =>
+    request('POST', '/reassignment/reassign', data),
+  reschedulePatient: (data) =>
+    request('POST', '/reassignment/reschedule', data),
+  getReassignmentStatus: (token) =>
+    request('GET', `/reassignment/status/${token}`),
 };

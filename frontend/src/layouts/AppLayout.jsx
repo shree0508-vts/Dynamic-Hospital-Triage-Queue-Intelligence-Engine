@@ -2,17 +2,18 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth.jsx'
 import {
   LayoutDashboard, UserPlus, Stethoscope, FlaskConical,
-  Bell, LogOut, Activity, ChevronRight, Shield
+  Bell, LogOut, Activity, ChevronRight, Shield, UserCog
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { api } from '../services/api.js'
 
 const NAV = {
   receptionist: [
-    { to: '/dashboard',  icon: LayoutDashboard, label: 'Command Dashboard' },
-    { to: '/register',   icon: UserPlus,         label: 'Patient Registration' },
-    { to: '/simulator',  icon: FlaskConical,      label: 'What-If Simulator' },
-    { to: '/notifications', icon: Bell,           label: 'Notifications' },
+    { to: '/dashboard',      icon: LayoutDashboard, label: 'Command Dashboard' },
+    { to: '/register',       icon: UserPlus,         label: 'Patient Registration' },
+    { to: '/simulator',      icon: FlaskConical,      label: 'What-If Simulator' },
+    { to: '/admin/doctors',  icon: UserCog,           label: 'Doctor Control' },
+    { to: '/notifications',  icon: Bell,              label: 'Notifications' },
   ],
   doctor: [
     { to: '/dashboard',  icon: LayoutDashboard, label: 'Overview' },

@@ -2,7 +2,7 @@
 Pydantic schemas for the Hospital Triage System
 """
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 from enum import Enum
 
@@ -111,9 +111,38 @@ class DoctorInfo(BaseModel):
     id: str
     name: str
     department: Department
-    status: str  # available, consulting, unavailable
+    status: str  # available, consulting, emergency, unavailable
     current_patient: Optional[str] = None
     patients_seen_today: int = 0
+
+
+# ── Smart Reassignment & Rescheduling Schemas ────────────────────────────────
+
+class DoctorStatusUpdate(BaseModel):
+    status: Literal["available", "consulting", "emergency", "unavailable"]
+
+
+class ReassignRequest(BaseModel):
+    token: str
+    new_doctor_id: str
+
+
+class RescheduleRequest(BaseModel):
+    token: str
+    doctor_id: str
+    slot_date: str   # e.g. "2026-09-20"
+    slot_time: str   # e.g. "10:30 AM"
+
+
+class ReassignmentStatusResponse(BaseModel):
+    token: str
+    action: str            # none | pending | reassigned | rescheduled
+    new_doctor_id: Optional[str] = None
+    new_doctor_name: Optional[str] = None
+    new_eta: Optional[str] = None
+    slot_date: Optional[str] = None
+    slot_time: Optional[str] = None
+    message: Optional[str] = None
 
 
 class PatientInfo(BaseModel):

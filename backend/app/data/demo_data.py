@@ -13,6 +13,8 @@ APP_STORE: dict = {
     "notifications": [],
     "activity": [],
     "consultations": [],
+    "reassignments": {},
+    "scheduled_appointments": {},
 }
 
 
@@ -82,12 +84,31 @@ def initialize_demo_data():
             "specialization": "Emergency Medicine",
             "patients_seen_today": 15,
         },
+        # ── Demo doctors for Smart Reassignment & Rescheduling feature ────────
+        "D06": {
+            "id": "D06",
+            "name": "Dr. Arun Kumar",
+            "department": "General Medicine",
+            "status": "available",
+            "current_patient": None,
+            "specialization": "General Practice",
+            "patients_seen_today": 6,
+        },
+        "D07": {
+            "id": "D07",
+            "name": "Dr. Priya Nair",
+            "department": "General Medicine",
+            "status": "available",
+            "current_patient": None,
+            "specialization": "Internal Medicine",
+            "patients_seen_today": 4,
+        },
     }
 
     # ── Departments ──────────────────────────────────────────────────────────
     APP_STORE["departments"] = {
         "Cardiology":       {"name": "Cardiology",      "capacity": 8,  "doctor_ids": ["D01"]},
-        "General Medicine": {"name": "General Medicine","capacity": 12, "doctor_ids": ["D02"]},
+        "General Medicine": {"name": "General Medicine","capacity": 12, "doctor_ids": ["D02", "D06", "D07"]},
         "Orthopaedics":     {"name": "Orthopaedics",    "capacity": 8,  "doctor_ids": ["D03"]},
         "Paediatrics":      {"name": "Paediatrics",     "capacity": 10, "doctor_ids": ["D04"]},
         "Emergency":        {"name": "Emergency",       "capacity": 6,  "doctor_ids": ["D05"]},
@@ -266,6 +287,23 @@ def initialize_demo_data():
             "token": "O00", "status": "completed", "estimated_duration": 9,
             "is_emergency": False, "offset": -80,
         },
+        # ── Demo patient for Smart Reassignment & Rescheduling (booked with Dr. Arun Kumar) ──
+        {
+            "id": "PAT021", "name": "Arjun Mehta", "age": 35,
+            "department": "General Medicine", "doctor_id": "D06", "visit_type": "New Consultation",
+            "priority_level": 4, "priority_label": "Less Urgent",
+            "priority_reason": "New consultation — standard",
+            "token": "A01", "status": "waiting", "estimated_duration": 15,
+            "is_emergency": False, "offset": 0, "position": 1,
+        },
+        {
+            "id": "PAT022", "name": "Sneha Pillai", "age": 29,
+            "department": "General Medicine", "doctor_id": "D06", "visit_type": "Follow-up",
+            "priority_level": 5, "priority_label": "Non-Urgent",
+            "priority_reason": "Follow-up appointment — non-urgent",
+            "token": "A02", "status": "waiting", "estimated_duration": 10,
+            "is_emergency": False, "offset": 0, "position": 2,
+        },
     ]
 
     now = datetime.now()
@@ -329,7 +367,7 @@ def initialize_demo_data():
         APP_STORE["tokens"][token_str] = token_record
 
     # Set token counters based on loaded data
-    queue_engine._token_counters = {"C": 5, "G": 4, "O": 3, "P": 3, "E": 2}
+    queue_engine._token_counters = {"C": 5, "G": 4, "O": 3, "P": 3, "E": 2, "A": 2}
     queue_engine._emergency_counter = {"E": 2}
 
     # Run initial ETA calculation

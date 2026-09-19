@@ -12,6 +12,7 @@ from app.models.schemas import (
     ConsultationExtendRequest, ConsultationCompleteRequest,
     PredictionRequest, SimulationRequest,
     PatientStatus, TokenStatus, PRIORITY_LABELS,
+    DoctorStatusUpdate, ReassignRequest, RescheduleRequest,
 )
 from app.services.queue_engine import queue_engine, calculate_priority
 from app.ml.predictor import predictor
@@ -669,3 +670,257 @@ def get_departments():
         ["Cardiology", "General Medicine", "Orthopaedics", "Paediatrics", "Emergency"]
     ]
     return {"departments": statuses}
+
+
+# ── Smart Doctor Reassignment & Rescheduling ─────────────────────────────────
+
+@router.patch("/doctors/{doctor_id}/status")
+def update_doctor_status(doctor_id: str, req: DoctorStatusUpdate):
+    """
+    Admin control: Change a doctor's status.
+    When set to 'emergency', automatically notifies all affected waiting patients.
+    """
+    store = _store()
+    if doctor_id not in store["doctors"]:
+        raise HTTPException(404, f"Doctor {doctor_id} not found")
+
+    doctor = store["doctors"][doctor_id]
+    old_status = doctor["status"]
+    doctor["previous_status"] = old_status
+    doctor["status"] = req.status
+
+    affected_patients = []
+
+    if req.status == "emergency":
+        # Find all waiting patients assigned to this doctor
+        tokens = store["tokens"]
+        for t in tokens.values():
+            if (t.get("doctor_id") == doctor_id
+                    and t["status"] in ("queued", "called")):
+                affected_patients.append(t["token"])
+                # Add a pending reassignment record (patient has not yet chosen)
+                store.setdefault("reassignments", {})[t["token"]] = {
+                    "action": "pending",
+                    "doctor_id": doctor_id,
+                    "doctor_name": doctor["name"],
+                    "timestamp": datetime.now().isoformat(),
+                }
+                # Notify each affected patient
+                queue_engine._add_notification(
+                    f"🚨 Dr. {doctor['name']} is attending an emergency. Please choose: see another doctor or reschedule.",
+                    "emergency",
+                    t["token"],
+                )
+
+        queue_engine.add_activity(
+            f"🚨 {doctor['name']} moved to Emergency status. {len(affected_patients)} patient(s) affected.",
+            "emergency"
+        )
+    elif req.status == "available":
+        queue_engine.add_activity(
+            f"✅ {doctor['name']} is now available.",
+            "success"
+        )
+    else:
+        queue_engine.add_activity(
+            f"ℹ️ {doctor['name']} status updated to {req.status}.",
+            "info"
+        )
+
+    return {
+        "doctor": doctor,
+        "affected_patients": affected_patients,
+        "message": f"Doctor {doctor['name']} status updated to {req.status}. {len(affected_patients)} patient(s) notified.",
+    }
+
+
+@router.get("/doctors/{doctor_id}/available-peers")
+def get_available_peers(doctor_id: str):
+    """
+    Return same-department doctors who are currently available (not in emergency/unavailable).
+    Used to show patient their reassignment options.
+    """
+    store = _store()
+    if doctor_id not in store["doctors"]:
+        raise HTTPException(404, f"Doctor {doctor_id} not found")
+
+    doctor = store["doctors"][doctor_id]
+    dept = doctor["department"]
+
+    # Count waiting patients per doctor for ETA estimate
+    tokens = store["tokens"]
+
+    peers = []
+    for d in store["doctors"].values():
+        if d["id"] == doctor_id:
+            continue
+        if d["department"] != dept:
+            continue
+        if d["status"] not in ("available", "consulting"):
+            continue
+
+        # Calculate how many patients are waiting for this doctor
+        waiting_for_peer = [
+            t for t in tokens.values()
+            if t.get("doctor_id") == d["id"] and t["status"] in ("queued", "called", "consulting")
+        ]
+        wait_minutes = sum(t.get("estimated_duration", 15) for t in waiting_for_peer)
+
+        # Next available time
+        now = datetime.now()
+        available_at = (now + timedelta(minutes=wait_minutes)).strftime("%I:%M %p")
+
+        peers.append({
+            "id": d["id"],
+            "name": d["name"],
+            "department": d["department"],
+            "status": d["status"],
+            "specialization": d.get("specialization", ""),
+            "patients_seen_today": d.get("patients_seen_today", 0),
+            "estimated_wait_minutes": wait_minutes,
+            "available_at": available_at,
+            "patients_waiting": len([t for t in waiting_for_peer if t["status"] in ("queued", "called")]),
+        })
+
+    peers.sort(key=lambda x: x["estimated_wait_minutes"])
+    return {"peers": peers, "department": dept, "original_doctor": doctor}
+
+
+@router.get("/reassignment/slots/{doctor_id}")
+def get_rescheduling_slots(doctor_id: str):
+    """
+    Return available future time slots for the next 2 days for a given doctor.
+    Generated dynamically based on existing appointments.
+    """
+    store = _store()
+    if doctor_id not in store["doctors"]:
+        raise HTTPException(404, f"Doctor {doctor_id} not found")
+
+    now = datetime.now()
+    slots = []
+
+    # Predefined slot times for clinic hours
+    slot_times = ["09:00 AM", "09:30 AM", "10:00 AM", "10:30 AM", "11:00 AM",
+                  "11:30 AM", "12:00 PM", "02:00 PM", "02:30 PM", "03:00 PM",
+                  "03:30 PM", "04:00 PM", "04:30 PM"]
+
+    # Get already scheduled appointments for this doctor
+    scheduled = store.get("scheduled_appointments", {})
+    booked_slots = {
+        (s["slot_date"], s["slot_time"])
+        for s in scheduled.values()
+        if s["doctor_id"] == doctor_id
+    }
+
+    for day_offset in range(1, 3):
+        day = now + timedelta(days=day_offset)
+        date_str = day.strftime("%Y-%m-%d")
+        date_label = "Tomorrow" if day_offset == 1 else "Day After Tomorrow"
+        day_slots = []
+
+        for t in slot_times:
+            if (date_str, t) not in booked_slots:
+                day_slots.append(t)
+
+        slots.append({
+            "date": date_str,
+            "label": date_label,
+            "display": day.strftime("%d %b %Y (%A)"),
+            "slots": day_slots,
+        })
+
+    return {"slots": slots, "doctor_id": doctor_id}
+
+
+@router.post("/reassignment/reassign")
+def reassign_patient(req: ReassignRequest):
+    """
+    Patient chooses another doctor — move them into the new doctor's queue.
+    """
+    store = _store()
+    tokens = store["tokens"]
+
+    if req.token not in tokens:
+        raise HTTPException(404, f"Token {req.token} not found")
+    if req.new_doctor_id not in store["doctors"]:
+        raise HTTPException(404, f"Doctor {req.new_doctor_id} not found")
+
+    t = tokens[req.token]
+    if t["status"] not in ("queued", "called", "pending"):
+        raise HTTPException(400, f"Token {req.token} is not in a reassignable state (status: {t['status']})")
+
+    try:
+        result = queue_engine.reassign_patient(req.token, req.new_doctor_id)
+        new_doctor = result["new_doctor"]
+        return {
+            "message": f"Your appointment has been reassigned to {new_doctor['name']}.",
+            "token": result["token"],
+            "new_doctor": new_doctor,
+            "new_eta": result["new_eta"],
+            "new_position": result["new_position"],
+        }
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/reassignment/reschedule")
+def reschedule_patient(req: RescheduleRequest):
+    """
+    Patient keeps same doctor — reschedule to a future date/time slot.
+    """
+    store = _store()
+    tokens = store["tokens"]
+
+    if req.token not in tokens:
+        raise HTTPException(404, f"Token {req.token} not found")
+
+    t = tokens[req.token]
+    if t["status"] not in ("queued", "called"):
+        raise HTTPException(400, f"Token {req.token} cannot be rescheduled (status: {t['status']})")
+
+    try:
+        result = queue_engine.reschedule_patient(req.token, req.doctor_id, req.slot_date, req.slot_time)
+        appt = result["scheduled_appointment"]
+        return {
+            "message": f"Your appointment with {appt['doctor_name']} has been rescheduled to {appt['slot_date']} at {appt['slot_time']}.",
+            "token": result["token"],
+            "scheduled_appointment": appt,
+        }
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/reassignment/status/{token}")
+def get_reassignment_status(token: str):
+    """
+    Return the current reassignment/reschedule status for a token.
+    Used by patient tracker to detect if action is needed.
+    """
+    store = _store()
+    tokens = store["tokens"]
+
+    if token not in tokens:
+        raise HTTPException(404, f"Token {token} not found")
+
+    t = tokens[token]
+    doctor_id = t.get("doctor_id")
+    doctor = store["doctors"].get(doctor_id, {}) if doctor_id else {}
+    doctor_status = doctor.get("status", "available")
+    doctor_name = doctor.get("name", "")
+
+    reassignment = store.get("reassignments", {}).get(token, {})
+    action = reassignment.get("action", "none")
+
+    # If doctor is in emergency and no action taken yet → pending
+    if doctor_status == "emergency" and action == "none":
+        action = "pending"
+
+    return {
+        "token": token,
+        "doctor_id": doctor_id,
+        "doctor_name": doctor_name,
+        "doctor_status": doctor_status,
+        "action": action,
+        "reassignment": reassignment,
+        "scheduled_appointment": store.get("scheduled_appointments", {}).get(token),
+    }
